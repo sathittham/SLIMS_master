@@ -44,6 +44,10 @@
                 android:icon="@drawable/ic_action_line_chart"
                 android:title="Filters Setting"/>
             <item
+                android:id="@+id/slims_menu_Settings_fused_setting"
+                android:icon="@drawable/ic_action_copy"
+                android:title="Fused Sensors Setting"/>
+            <item
                 android:id="@+id/slims_menu_settings_setting"
                 android:icon="@drawable/action_settings"
                 android:title="Setting"/>

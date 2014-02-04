@@ -1,6 +1,7 @@
 package sathittham.sangthong.slims_master.fused_sensors;
 
 import java.util.ArrayList;
+import java.util.Iterator;
 
 import org.apache.commons.math3.geometry.euclidean.threed.Rotation;
 import org.apache.commons.math3.geometry.euclidean.threed.Vector3D;
@@ -28,21 +29,20 @@ import android.hardware.SensorManager;
  */
 
 /**
- * Gyroscope Sensor is a subject in an Observer Pattern for classes that need to
- * be provided with rotation measurements. Gyroscope Sensor implements
- * Sensor.TYPE_GYROSCOPE and provides methods for managing SensorEvents and
+ * Magnetic Sensor is a subject in an Observer Pattern for classes that need to
+ * be provided with magnetic field measurements. Magnetic Sensor implements
+ * Sensor.TYPE_MAGNETIC and provides methods for managing SensorEvents and
  * rotations.
  * 
- * Note that not all devices support Sensor.TYPE_GYROSCOPE. If
- * Sensor.TYPE_GYROSCOPE is supported, it can not be guaranteed that the
- * gyroscope sensors drift has been compensated for. Therefore, appropriate
- * algorithms should be applied to the sensor measurements to ensure stability
- * across devices.
+ * Sensor.TYPE_GYROSCOPE does not be guarantee that the magnetic sensors is not
+ * subject to hard and soft iron effects. Therefore, appropriate algorithms
+ * should be applied to the sensor measurements to ensure stability across
+ * devices.
  * 
  * @author Kaleb
  * @version %I%, %G%
  */
-public class GyroscopeSensor implements SensorEventListener
+public class MagneticSensor implements SensorEventListener
 {
 	/*
 	 * Developer Note: Quaternions are used for the internal representations of
@@ -50,22 +50,22 @@ public class GyroscopeSensor implements SensorEventListener
 	 * lock when using Euler angles for the rotations.
 	 */
 
-	private static final String tag = GyroscopeSensor.class.getSimpleName();
-	
+	private static final String tag = MagneticSensor.class.getSimpleName();
+
 	// Keep track of observers.
-	private ArrayList<GyroscopeSensorObserver> observersGyroscope;
+	private ArrayList<MagneticSensorObserver> observersMagnetic;
 
 	// Keep track of the application mode. Vehicle Mode occurs when the device
 	// is in the Landscape orientation and the sensors are rotated to face the
 	// -Z-Axis (along the axis of the camera).
 	private boolean vehicleMode = false;
 
-	// We need the Context to register for Sensor Events.
+	// The time stamp of the most recent Sensor Event.
 	private Context context;
 
 	// Keep a local copy of the rotation values that are copied from the
 	// sensor event.
-	private float[] gyroscope = new float[3];
+	private float[] magnetic = new float[3];
 
 	// The time stamp of the most recent Sensor Event.
 	private long timeStamp = 0;
@@ -93,7 +93,7 @@ public class GyroscopeSensor implements SensorEventListener
 	 * @param context
 	 *            the Activities context.
 	 */
-	public GyroscopeSensor(Context context)
+	public MagneticSensor(Context context)
 	{
 		super();
 
@@ -101,79 +101,77 @@ public class GyroscopeSensor implements SensorEventListener
 
 		initQuaternionRotations();
 
-		observersGyroscope = new ArrayList<GyroscopeSensorObserver>();
+		observersMagnetic = new ArrayList<MagneticSensorObserver>();
 
 		sensorManager = (SensorManager) this.context
 				.getSystemService(Context.SENSOR_SERVICE);
 	}
 
 	/**
-	 * Register for Sensor.TYPE_GYROSCOPE measurements.
+	 * Register for Sensor.TYPE_MAGNETIC measurements.
 	 * 
 	 * @param observer
 	 *            The observer to be registered.
 	 */
-	public void registerGyroscopeObserver(GyroscopeSensorObserver observer)
+	public void registerMagneticObserver(MagneticSensorObserver observer)
 	{
-		if (observersGyroscope.size() == 0)
+		if (observersMagnetic.size() == 0)
 		{
 			sensorManager.registerListener(this,
-					sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE),
+					sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD),
 					SensorManager.SENSOR_DELAY_FASTEST);
 		}
-		
+
 		// Only register the observer if it is not already registered.
-		int i = observersGyroscope.indexOf(observer);
+		int i = observersMagnetic.indexOf(observer);
 		if (i == -1)
 		{
-			observersGyroscope.add(observer);
+			observersMagnetic.add(observer);
 		}
 	}
 
 	/**
-	 * Remove Sensor.TYPE_GYROSCOPE measurements.
+	 * Remove Sensor.TYPE_MAGNETIC measurements.
 	 * 
 	 * @param observer
 	 *            The observer to be removed.
 	 */
-	public void removeGyroscopeObserver(GyroscopeSensorObserver observer)
+	public void removeMagneticObserver(MagneticSensorObserver observer)
 	{
-		int i = observersGyroscope.indexOf(observer);
+		int i = observersMagnetic.indexOf(observer);
 		if (i >= 0)
 		{
-			observersGyroscope.remove(i);
+			observersMagnetic.remove(i);
 		}
 
 		// If there are no observers, then don't listen for Sensor Events.
-		if (observersGyroscope.size() == 0)
+		if (observersMagnetic.size() == 0)
 		{
 			sensorManager.unregisterListener(this);
 		}
 	}
 
-
 	@Override
 	public void onAccuracyChanged(Sensor sensor, int accuracy)
 	{
-		// Do nothing.
+
 	}
 
 	@Override
 	public void onSensorChanged(SensorEvent event)
 	{
-		if (event.sensor.getType() == Sensor.TYPE_GYROSCOPE)
+		if (event.sensor.getType() == Sensor.TYPE_MAGNETIC_FIELD)
 		{
-			System.arraycopy(event.values, 0, this.gyroscope, 0,
-					event.values.length);
+			System.arraycopy(event.values, 0, magnetic, 0, event.values.length);
 
-			this.timeStamp = event.timestamp;
+			timeStamp = event.timestamp;
 
 			if (vehicleMode)
 			{
-				this.gyroscope = quaternionToDeviceVehicleMode(this.gyroscope);
+				this.magnetic = quaternionToDeviceVehicleMode(this.magnetic);
 			}
 
-			notifyGyroscopeObserver();
+			notifyMagneticObserver();
 		}
 	}
 
@@ -211,15 +209,24 @@ public class GyroscopeSensor implements SensorEventListener
 		// Create the composite rotation.
 		rotationQuaternion = yQuaternion.applyTo(xQuaternion);
 	}
-	
+
 	/**
 	 * Notify observers with new measurements.
 	 */
-	private void notifyGyroscopeObserver()
+	private void notifyMagneticObserver()
 	{
-		for (GyroscopeSensorObserver a : observersGyroscope)
+		// The iterator is a work around for a concurrency exception... Not the best work around, but it works for now.
+		MagneticSensorObserver observer;
+
+		ArrayList<MagneticSensorObserver> notificationList = new ArrayList<MagneticSensorObserver>(
+				observersMagnetic);
+
+		for (Iterator<MagneticSensorObserver> iterator = notificationList
+				.iterator(); iterator.hasNext();)
 		{
-			a.onGyroscopeSensorChanged(this.gyroscope, this.timeStamp);
+			observer = iterator.next();
+
+			observer.onMagneticSensorChanged(this.magnetic, this.timeStamp);
 		}
 	}
 
@@ -241,7 +248,6 @@ public class GyroscopeSensor implements SensorEventListener
 	 */
 	private float[] quaternionToDeviceVehicleMode(float[] matrix)
 	{
-
 		vIn = new Vector3D(matrix[0], matrix[1], matrix[2]);
 		vOut = rotationQuaternion.applyTo(vIn);
 

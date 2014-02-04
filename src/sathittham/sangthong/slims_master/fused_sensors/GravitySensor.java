@@ -1,6 +1,7 @@
 package sathittham.sangthong.slims_master.fused_sensors;
 
 import java.util.ArrayList;
+import java.util.Iterator;
 
 import org.apache.commons.math3.geometry.euclidean.threed.Rotation;
 import org.apache.commons.math3.geometry.euclidean.threed.Vector3D;
@@ -11,38 +12,27 @@ import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
 
-/*
- * Copyright 2013, Kaleb Kircher - Boki Software, Kircher Electronics
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 /**
- * Gyroscope Sensor is a subject in an Observer Pattern for classes that need to
- * be provided with rotation measurements. Gyroscope Sensor implements
- * Sensor.TYPE_GYROSCOPE and provides methods for managing SensorEvents and
- * rotations.
+ * Gravity Sensor is a subject in an Observer Pattern for classes that need to
+ * be provided with acceleration measurements. Acceleration Sensor implements
+ * Sensor.TYPE_GRAVITY and provides methods for managing SensorEvents and
+ * rotations. Unlike Sensor.TYPE_ACCELERATION, Sensor.TYPE_GRAVITY uses a sensor
+ * fusion to help sequester the gravity and linear acceleration components of
+ * the signal, providing only the gravity measurement. This is advantageous in
+ * many implementations. For example, Sensor.TYPE_GRAVITY provides more accurate
+ * tilt compensations than Sensor.TYPE_ACCELERATION, especially while the device
+ * is experiencing linear acceleration.
  * 
- * Note that not all devices support Sensor.TYPE_GYROSCOPE. If
- * Sensor.TYPE_GYROSCOPE is supported, it can not be guaranteed that the
- * gyroscope sensors drift has been compensated for. Therefore, appropriate
- * algorithms should be applied to the sensor measurements to ensure stability
- * across devices.
+ * Note that Sensor.TYPE_GRAVITY is not implemented on all Android devices.
+ * Appropriate steps to fall back onto Sensor.TYPE_ACCELERATION should be taken.
+ * To help facilitate this process, GravityAccelerationSensor and
+ * AccelerationSensor both register the type AccelerationSensorObserver, so
+ * observers can be ambiguous to the configuration.
  * 
  * @author Kaleb
  * @version %I%, %G%
  */
-public class GyroscopeSensor implements SensorEventListener
+public class GravitySensor implements SensorEventListener
 {
 	/*
 	 * Developer Note: Quaternions are used for the internal representations of
@@ -50,10 +40,10 @@ public class GyroscopeSensor implements SensorEventListener
 	 * lock when using Euler angles for the rotations.
 	 */
 
-	private static final String tag = GyroscopeSensor.class.getSimpleName();
-	
+	private static final String tag = GravitySensor.class.getSimpleName();
+
 	// Keep track of observers.
-	private ArrayList<GyroscopeSensorObserver> observersGyroscope;
+	private ArrayList<GravitySensorObserver> observersAcceleration;
 
 	// Keep track of the application mode. Vehicle Mode occurs when the device
 	// is in the Landscape orientation and the sensors are rotated to face the
@@ -63,9 +53,9 @@ public class GyroscopeSensor implements SensorEventListener
 	// We need the Context to register for Sensor Events.
 	private Context context;
 
-	// Keep a local copy of the rotation values that are copied from the
+	// Keep a local copy of the acceleration values that are copied from the
 	// sensor event.
-	private float[] gyroscope = new float[3];
+	private float[] gravity = new float[3];
 
 	// The time stamp of the most recent Sensor Event.
 	private long timeStamp = 0;
@@ -93,7 +83,7 @@ public class GyroscopeSensor implements SensorEventListener
 	 * @param context
 	 *            the Activities context.
 	 */
-	public GyroscopeSensor(Context context)
+	public GravitySensor(Context context)
 	{
 		super();
 
@@ -101,56 +91,58 @@ public class GyroscopeSensor implements SensorEventListener
 
 		initQuaternionRotations();
 
-		observersGyroscope = new ArrayList<GyroscopeSensorObserver>();
+		observersAcceleration = new ArrayList<GravitySensorObserver>();
 
 		sensorManager = (SensorManager) this.context
 				.getSystemService(Context.SENSOR_SERVICE);
+
 	}
 
 	/**
-	 * Register for Sensor.TYPE_GYROSCOPE measurements.
+	 * Register for Sensor.TYPE_GRAVITY measurements.
 	 * 
 	 * @param observer
 	 *            The observer to be registered.
 	 */
-	public void registerGyroscopeObserver(GyroscopeSensorObserver observer)
+	public void registerGravityObserver(GravitySensorObserver observer)
 	{
-		if (observersGyroscope.size() == 0)
+		// If there are currently no observers, but one has just requested to be
+		// registered, register to listen for sensor events from the device.
+		if (observersAcceleration.size() == 0)
 		{
 			sensorManager.registerListener(this,
-					sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE),
+					sensorManager.getDefaultSensor(Sensor.TYPE_GRAVITY),
 					SensorManager.SENSOR_DELAY_FASTEST);
 		}
-		
+
 		// Only register the observer if it is not already registered.
-		int i = observersGyroscope.indexOf(observer);
+		int i = observersAcceleration.indexOf(observer);
 		if (i == -1)
 		{
-			observersGyroscope.add(observer);
+			observersAcceleration.add(observer);
 		}
 	}
 
 	/**
-	 * Remove Sensor.TYPE_GYROSCOPE measurements.
+	 * Remove Sensor.TYPE_GRAVITY measurements.
 	 * 
 	 * @param observer
 	 *            The observer to be removed.
 	 */
-	public void removeGyroscopeObserver(GyroscopeSensorObserver observer)
+	public void removeGravityObserver(GravitySensorObserver observer)
 	{
-		int i = observersGyroscope.indexOf(observer);
+		int i = observersAcceleration.indexOf(observer);
 		if (i >= 0)
 		{
-			observersGyroscope.remove(i);
+			observersAcceleration.remove(i);
 		}
 
 		// If there are no observers, then don't listen for Sensor Events.
-		if (observersGyroscope.size() == 0)
+		if (observersAcceleration.size() == 0)
 		{
 			sensorManager.unregisterListener(this);
 		}
 	}
-
 
 	@Override
 	public void onAccuracyChanged(Sensor sensor, int accuracy)
@@ -161,19 +153,18 @@ public class GyroscopeSensor implements SensorEventListener
 	@Override
 	public void onSensorChanged(SensorEvent event)
 	{
-		if (event.sensor.getType() == Sensor.TYPE_GYROSCOPE)
+		if (event.sensor.getType() == Sensor.TYPE_GRAVITY)
 		{
-			System.arraycopy(event.values, 0, this.gyroscope, 0,
-					event.values.length);
+			System.arraycopy(event.values, 0, gravity, 0, event.values.length);
 
-			this.timeStamp = event.timestamp;
+			timeStamp = event.timestamp;
 
 			if (vehicleMode)
 			{
-				this.gyroscope = quaternionToDeviceVehicleMode(this.gyroscope);
+				gravity = quaternionToDeviceVehicleMode(gravity);
 			}
 
-			notifyGyroscopeObserver();
+			notifyGravityObserver();
 		}
 	}
 
@@ -211,15 +202,24 @@ public class GyroscopeSensor implements SensorEventListener
 		// Create the composite rotation.
 		rotationQuaternion = yQuaternion.applyTo(xQuaternion);
 	}
-	
+
 	/**
 	 * Notify observers with new measurements.
 	 */
-	private void notifyGyroscopeObserver()
+	private void notifyGravityObserver()
 	{
-		for (GyroscopeSensorObserver a : observersGyroscope)
+		// The iterator is a work around for a concurrency exception...
+		GravitySensorObserver observer;
+
+		ArrayList<GravitySensorObserver> notificationList = new ArrayList<GravitySensorObserver>(
+				observersAcceleration);
+
+		for (Iterator<GravitySensorObserver> iterator = notificationList
+				.iterator(); iterator.hasNext();)
 		{
-			a.onGyroscopeSensorChanged(this.gyroscope, this.timeStamp);
+			observer = iterator.next();
+
+			observer.onGravitySensorChanged(this.gravity, this.timeStamp);
 		}
 	}
 

@@ -10,6 +10,16 @@ import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.List;
 
+import sathittham.sangthong.slims_master.fused_sensors.FSMeanFilter;
+import sathittham.sangthong.slims_master.fused_sensors.FusedGyroscopeSensor;
+import sathittham.sangthong.slims_master.fused_sensors.FusedGyroscopeSensorObserver;
+import sathittham.sangthong.slims_master.fused_sensors.FusedSensorsActivity;
+import sathittham.sangthong.slims_master.fused_sensors.GravitySensor;
+import sathittham.sangthong.slims_master.fused_sensors.GravitySensorObserver;
+import sathittham.sangthong.slims_master.fused_sensors.GyroscopeSensor;
+import sathittham.sangthong.slims_master.fused_sensors.GyroscopeSensorObserver;
+import sathittham.sangthong.slims_master.fused_sensors.MagneticSensor;
+import sathittham.sangthong.slims_master.fused_sensors.MagneticSensorObserver;
 import sathittham.sangthong.slims_master.pdr.DynamicLinePlot;
 import sathittham.sangthong.slims_master.pdr.FilterSettingsDialog;
 import sathittham.sangthong.slims_master.pdr.LPFAndroidDeveloper;
@@ -66,9 +76,11 @@ import com.google.android.gms.maps.model.MarkerOptions;
 import com.google.android.gms.maps.model.PolygonOptions;
 import com.google.android.gms.maps.model.PolylineOptions;
 
-public class MainActivity extends Activity implements OnClickListener, Runnable {
+public class MainActivity extends Activity implements OnClickListener,
+		Runnable, FusedGyroscopeSensorObserver, GravitySensorObserver,
+		MagneticSensorObserver, GyroscopeSensorObserver {
 
-	/***************** Utils *****************/
+	/*********************************** Utils ***********************************/
 	// Context
 	private Context context;
 
@@ -93,7 +105,7 @@ public class MainActivity extends Activity implements OnClickListener, Runnable 
 	// Sensor Manager
 	private SensorManager sensorManager;
 
-	/******************* UI Output *******************/
+	/************************************* UI Output *************************************/
 	// Acceleration UI outputs
 	private TextView xAxis;
 	private TextView yAxis;
@@ -111,7 +123,7 @@ public class MainActivity extends Activity implements OnClickListener, Runnable 
 	// Display for walking distance
 	private TextView mDistanceValue;;
 
-	// Display for compass value
+	// Display for Fusion compass value
 	private TextView mCompassValue;
 
 	// Display for Compass picture
@@ -125,7 +137,46 @@ public class MainActivity extends Activity implements OnClickListener, Runnable 
 	private Button mStopBtn;
 	private Button mResetBtn;
 
-	/******************* PDR Variable *******************/
+	/************************************* PDR and Fusion *************************************/
+	// Fusiion
+	public static final float EPSILON = 0.000000001f;
+
+	private static final float NS2S = 1.0f / 1000000000.0f;
+	private static final int MEAN_FILTER_WINDOW = 10;
+	private static final int MIN_SAMPLE_COUNT = 30;
+
+	private boolean hasInitialOrientation = false;
+	private boolean stateInitializedAndroid = false;
+
+	// Calibrated maths.
+	private float[] currentRotationMatrixAndroid;
+	private float[] deltaRotationMatrixAndroid;
+	private float[] deltaRotationVectorAndroid;
+	private float[] gyroscopeOrientationAndroid;
+
+	// accelerometer and magnetometer based rotation matrix
+	private float[] initialRotationMatrix;
+
+	// accelerometer vector
+	private float[] gravity;
+
+	// magnetic field vector
+	private float[] magnetic;
+
+	private int accelerationSampleCount = 0;
+	private int magneticSampleCount = 0;
+
+	private long timestampOldCalibrated = 0;
+
+	private FSMeanFilter gravityFilter;
+	private FSMeanFilter magneticFilter;
+
+	private FusedGyroscopeSensor fusedGyroscopeSensor;
+	private GravitySensor gravitySensor;
+	private GyroscopeSensor gyroscopeSensor;
+	private MagneticSensor magneticSensor;
+
+	// PDR
 	private StepDetector stepDetector;
 
 	// Outputs for the acceleration and LPFs
@@ -138,7 +189,7 @@ public class MainActivity extends Activity implements OnClickListener, Runnable 
 
 	// Sensor
 	Sensor accSensor;
-	Sensor orientationSensor;
+	// Sensor orientationSensor;
 
 	// Values to calculate Number of steps,distance,compass
 	private float previousY;
@@ -163,7 +214,7 @@ public class MainActivity extends Activity implements OnClickListener, Runnable 
 	private double neg_peek_thr;
 	private double neg_thr;
 
-	/***************** Map *****************/
+	/*********************************** Map ***********************************/
 	private Object[] obj;
 
 	// Google Map
@@ -184,7 +235,7 @@ public class MainActivity extends Activity implements OnClickListener, Runnable 
 	private String nodeTo = "";
 	private String nodeFrom = "";
 
-	/***************** Filters *****************/
+	/*********************************** Filters ***********************************/
 	// Low-Pass Filters
 	private LowPassFilter lpfWiki;
 	private LowPassFilter lpfAndDev;
@@ -211,7 +262,7 @@ public class MainActivity extends Activity implements OnClickListener, Runnable 
 	private StdDev varianceLPFAndDev;
 	private StdDev varianceMean;
 
-	/***************** Log Data *****************/
+	/*********************************** Log Data ***********************************/
 	// Indicate if the output should be logged to a .csv file
 	private boolean logData = false;
 
@@ -247,7 +298,7 @@ public class MainActivity extends Activity implements OnClickListener, Runnable 
 	// Icon to indicate logging is active
 	private ImageView iconLogger;
 
-	/***************** Graph Plot *****************/
+	/*********************************** Graph Plot ***********************************/
 	private XYPlot plot;
 	private LinearLayout graphLayout;
 
@@ -324,7 +375,7 @@ public class MainActivity extends Activity implements OnClickListener, Runnable 
 		return MEAN_SAMPLE_WINDOW;
 	}
 
-	/****************** on Create ******************/
+	/************************************ on Create ************************************/
 	@Override
 	protected void onCreate(Bundle savedInstanceState) {
 		Log.i(TAG, "[MAINACTIVITY] onCreate()");
@@ -342,6 +393,8 @@ public class MainActivity extends Activity implements OnClickListener, Runnable 
 		initTextOutputs();
 		initIcons();
 		initStatistics();
+		initMaths();
+		initSensors();
 		initFilters();
 		initButton();
 		initCompass();
@@ -441,7 +494,7 @@ public class MainActivity extends Activity implements OnClickListener, Runnable 
 		handler = new Handler();
 	}
 
-	/**************** onClick ****************/
+	/********************************** onClick (Start, Stop, Reset) **********************************/
 	@Override
 	public void onClick(View v) {
 		switch (v.getId()) {
@@ -461,10 +514,10 @@ public class MainActivity extends Activity implements OnClickListener, Runnable 
 			// Start Accelerometer sensor listener
 			sensorManager.registerListener(accelListener, accSensor,
 					SensorManager.SENSOR_DELAY_FASTEST);
-			// Start Orientation Sensor listener
-			sensorManager.registerListener(orientationListener,
-					orientationSensor, SensorManager.SENSOR_DELAY_FASTEST);
-			// updateAccelerationText();
+
+			resetFusedCompass();
+			restartFusedCompass();
+
 			break;
 
 		case R.id.stop_btn:
@@ -477,8 +530,8 @@ public class MainActivity extends Activity implements OnClickListener, Runnable 
 
 			// Disable Accelerometer sensor listener
 			sensorManager.unregisterListener(accelListener);
-			// Disable Orientation sensor listener
-			sensorManager.unregisterListener(orientationListener);
+
+			resetFusedCompass();
 
 			if (logData) {
 				writeLogToFile();
@@ -497,8 +550,8 @@ public class MainActivity extends Activity implements OnClickListener, Runnable 
 
 			// Disable Accelerometer sensor listener
 			sensorManager.unregisterListener(accelListener);
-			// Disable Orientation sensor listener
-			sensorManager.unregisterListener(orientationListener);
+
+			resetFusedCompass();
 
 			resetValue = 0.0f;
 			xAxis.setText(String.valueOf("X: " + resetValue));
@@ -511,16 +564,15 @@ public class MainActivity extends Activity implements OnClickListener, Runnable 
 			numSteps = 0;
 			mStepValue.setText(String.valueOf(numSteps));
 
-			// Intent intent = getIntent();
-			// finish();
-			// startActivity(intent);
-			//
 			break;
 		}
 
 	}
 
-	/**************** Accelerometer Sensor Event Listener ****************/
+	/********************************** Sensors Event Listener and Data **********************************/
+	/*
+	 * Accelerometer Sensor Event Listener
+	 */
 	// Event handler for accelerometer events
 	SensorEventListener accelListener = new SensorEventListener() {
 
@@ -537,10 +589,6 @@ public class MainActivity extends Activity implements OnClickListener, Runnable 
 			acceleration[0] = acceleration[0] / SensorManager.GRAVITY_EARTH; // x
 			acceleration[1] = acceleration[1] / SensorManager.GRAVITY_EARTH; // y
 			acceleration[2] = acceleration[2] / SensorManager.GRAVITY_EARTH; // z
-
-			// lpfWikiOutput = lpfWiki.addSamples(acceleration);
-			// lpfAndDevOutput = lpfAndDev.addSamples(acceleration);
-			// meanFilterOutput = meanFilter.filterFloat(acceleration);
 
 			if (plotLPFWiki) {
 				lpfWikiOutput = lpfWiki.addSamples(acceleration);
@@ -560,57 +608,243 @@ public class MainActivity extends Activity implements OnClickListener, Runnable 
 		}
 	};
 
-	/**************** Orientation Sensor Event Listener ****************/
-	// Event handler for Orientation events
-	SensorEventListener orientationListener = new SensorEventListener() {
-
-		@Override
-		public void onSensorChanged(SensorEvent event) {
-			Log.i(TAG, "[MAINACTIVITY] Orientation-onSensorChanged()");
-			// get the angle around the z-axis rotated
-			float mHeading = Math.round(event.values[0]);
-
-			mCompassValue.setText("Heading : " + Float.toString(mHeading)
-					+ " degree");
-
-			// create a rotation animation (reverse turn degree degrees)
-			RotateAnimation ra = new RotateAnimation(currentDegree, -mHeading,
-					Animation.RELATIVE_TO_SELF, 0.5f,
-					Animation.RELATIVE_TO_SELF, 0.5f);
-
-			// how long the animation will take place
-			ra.setDuration(210);
-
-			// set the animation after the end of the reservation status
-			ra.setFillAfter(true);
-
-			// Start the animation
-			mCompassImage.startAnimation(ra);
-			currentDegree = -mHeading;
-		}
-
-		@Override
-		public void onAccuracyChanged(Sensor sensor, int accuracy) {
-			// not in use
-		}
-	};
-
-	/**************** Enable Sensor Event Listener ****************/
+	/*
+	 * Enable Sensor Event Listener
+	 */
 	private void enableSensorListening() {
 		Log.i(TAG, "[MAINACTIVITY] enableSensorListening()");
 		// Initialize the sensor Manager
 		sensorManager = (SensorManager) getSystemService(Context.SENSOR_SERVICE);
 
-		// Linear Acceleration Sensor
+		// Acceleration Sensor
 		accSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
-
-		// Orientation Sensor
-		orientationSensor = sensorManager
-				.getDefaultSensor(Sensor.TYPE_ORIENTATION);
 
 	}
 
-	/****************** Get Default Location ******************/
+	/********************************** Fused Sensor Changed and Methods **********************************/
+	@Override
+	public void onGravitySensorChanged(float[] gravity, long timeStamp) {
+		// Get a local copy of the raw magnetic values from the device sensor.
+		System.arraycopy(gravity, 0, this.gravity, 0, gravity.length);
+
+		// Use a mean filter to smooth the sensor inputs
+		this.gravity = gravityFilter.filterFloat(this.gravity);
+
+		// Count the number of samples received.
+		accelerationSampleCount++;
+
+		// Only determine the initial orientation after the acceleration sensor
+		// and magnetic sensor have had enough time to be smoothed by the mean
+		// filters. Also, only do this if the orientation hasn't already been
+		// determined since we only need it once.
+		if (accelerationSampleCount > MIN_SAMPLE_COUNT
+				&& magneticSampleCount > MIN_SAMPLE_COUNT
+				&& !hasInitialOrientation) {
+			calculateOrientation();
+		}
+
+	}
+
+	@Override
+	public void onGyroscopeSensorChanged(float[] gyroscope, long timeStamp) {
+		// don't start until first accelerometer/magnetometer orientation has
+		// been acquired
+		if (!hasInitialOrientation) {
+			return;
+		}
+
+		// Initialization of the gyroscope based rotation matrix
+		if (!stateInitializedAndroid) {
+			currentRotationMatrixAndroid = matrixMultiplication(
+					currentRotationMatrixAndroid, initialRotationMatrix);
+
+			stateInitializedAndroid = true;
+		}
+
+		// This timestep's delta rotation to be multiplied by the current
+		// rotation after computing it from the gyro sample data.
+		if (timestampOldCalibrated != 0 && stateInitializedAndroid) {
+			final float dT = (timeStamp - timestampOldCalibrated) * NS2S;
+
+			// Axis of the rotation sample, not normalized yet.
+			float axisX = gyroscope[0];
+			float axisY = gyroscope[1];
+			float axisZ = gyroscope[2];
+
+			// Calculate the angular speed of the sample
+			float omegaMagnitude = (float) Math.sqrt(axisX * axisX + axisY
+					* axisY + axisZ * axisZ);
+
+			// Normalize the rotation vector if it's big enough to get the axis
+			if (omegaMagnitude > EPSILON) {
+				axisX /= omegaMagnitude;
+				axisY /= omegaMagnitude;
+				axisZ /= omegaMagnitude;
+			}
+
+			// Integrate around this axis with the angular speed by the timestep
+			// in order to get a delta rotation from this sample over the
+			// timestep. We will convert this axis-angle representation of the
+			// delta rotation into a quaternion before turning it into the
+			// rotation matrix.
+			float thetaOverTwo = omegaMagnitude * dT / 2.0f;
+
+			float sinThetaOverTwo = (float) Math.sin(thetaOverTwo);
+			float cosThetaOverTwo = (float) Math.cos(thetaOverTwo);
+
+			deltaRotationVectorAndroid[0] = sinThetaOverTwo * axisX;
+			deltaRotationVectorAndroid[1] = sinThetaOverTwo * axisY;
+			deltaRotationVectorAndroid[2] = sinThetaOverTwo * axisZ;
+			deltaRotationVectorAndroid[3] = cosThetaOverTwo;
+
+			SensorManager.getRotationMatrixFromVector(
+					deltaRotationMatrixAndroid, deltaRotationVectorAndroid);
+
+			currentRotationMatrixAndroid = matrixMultiplication(
+					currentRotationMatrixAndroid, deltaRotationMatrixAndroid);
+
+			SensorManager.getOrientation(currentRotationMatrixAndroid,
+					gyroscopeOrientationAndroid);
+		}
+
+		timestampOldCalibrated = timeStamp;
+
+		// get the angle around the z-axis rotated
+		float mHeading = Math.round(gyroscopeOrientationAndroid[0] * 180
+				/ Math.PI); // degree
+
+		mCompassValue.setText("Heading : " + Float.toString(mHeading)
+				+ " degree");
+
+		// create a rotation animation (reverse turn degree degrees)
+		RotateAnimation ra = new RotateAnimation(currentDegree, -mHeading,
+				Animation.RELATIVE_TO_SELF, 0.5f, Animation.RELATIVE_TO_SELF,
+				0.5f);
+
+		// how long the animation will take place
+		ra.setDuration(210);
+
+		// set the animation after the end of the reservation status
+		ra.setFillAfter(true);
+
+		// Start the animation
+		mCompassImage.startAnimation(ra);
+		currentDegree = -mHeading;
+
+	}
+
+	@Override
+	public void onAngularVelocitySensorChanged(float[] angularVelocity,
+			long timeStamp) {
+
+		// gaugeBearingFused.updateBearing(angularVelocity[0]);
+		// gaugeTiltFused.updateRotation(angularVelocity);
+
+		// xAxisFused.setText(df.format(angularVelocity[0] * 180 / Math.PI));
+		// yAxisFused.setText(df.format(angularVelocity[1] * 180 / Math.PI));
+		// zAxisFused.setText(df.format(angularVelocity[2] * 180 / Math.PI));
+
+	}
+
+	@Override
+	public void onMagneticSensorChanged(float[] magnetic, long timeStamp) {
+		// Get a local copy of the raw magnetic values from the device sensor.
+		System.arraycopy(magnetic, 0, this.magnetic, 0, magnetic.length);
+
+		// Use a mean filter to smooth the sensor inputs
+		this.magnetic = magneticFilter.filterFloat(this.magnetic);
+
+		// Count the number of samples received.
+		magneticSampleCount++;
+	}
+
+	/**
+	 * Calculates orientation angles from accelerometer and magnetometer output.
+	 * Note that we only use this *once* at the beginning to orient the
+	 * gyroscope to earth frame. If you do not call this, the gyroscope will
+	 * orient itself to whatever the relative orientation the device is in at
+	 * the time of initialization.
+	 */
+	private void calculateOrientation() {
+		hasInitialOrientation = SensorManager.getRotationMatrix(
+				initialRotationMatrix, null, gravity, magnetic);
+
+		// Remove the sensor observers since they are no longer required.
+		if (hasInitialOrientation) {
+			gravitySensor.removeGravityObserver(this);
+			magneticSensor.removeMagneticObserver(this);
+		}
+	}
+
+	/**
+	 * Multiply matrix a by b. Android gives us matrices results in
+	 * one-dimensional arrays instead of two, so instead of using some (O)2 to
+	 * transfer to a two-dimensional array and then an (O)3 algorithm to
+	 * multiply, we just use a static linear time method.
+	 * 
+	 * @param a
+	 * @param b
+	 * @return a*b
+	 */
+	private float[] matrixMultiplication(float[] a, float[] b) {
+		float[] result = new float[9];
+
+		result[0] = a[0] * b[0] + a[1] * b[3] + a[2] * b[6];
+		result[1] = a[0] * b[1] + a[1] * b[4] + a[2] * b[7];
+		result[2] = a[0] * b[2] + a[1] * b[5] + a[2] * b[8];
+
+		result[3] = a[3] * b[0] + a[4] * b[3] + a[5] * b[6];
+		result[4] = a[3] * b[1] + a[4] * b[4] + a[5] * b[7];
+		result[5] = a[3] * b[2] + a[4] * b[5] + a[5] * b[8];
+
+		result[6] = a[6] * b[0] + a[7] * b[3] + a[8] * b[6];
+		result[7] = a[6] * b[1] + a[7] * b[4] + a[8] * b[7];
+		result[8] = a[6] * b[2] + a[7] * b[5] + a[8] * b[8];
+
+		return result;
+	}
+
+	/**
+	 * Restarts all of the sensor observers and resets the activity to the
+	 * initial state. This should only be called *after* a call to reset().
+	 */
+	private void restartFusedCompass() {
+		gravitySensor.registerGravityObserver(this);
+		magneticSensor.registerMagneticObserver(this);
+		gyroscopeSensor.registerGyroscopeObserver(this);
+
+		gravitySensor.registerGravityObserver(fusedGyroscopeSensor);
+		magneticSensor.registerMagneticObserver(fusedGyroscopeSensor);
+		gyroscopeSensor.registerGyroscopeObserver(fusedGyroscopeSensor);
+
+		fusedGyroscopeSensor.registerObserver(this);
+	}
+
+	/**
+	 * Removes all of the sensor observers and resets the activity to the
+	 * initial state.
+	 */
+	private void resetFusedCompass() {
+		gravitySensor.removeGravityObserver(this);
+		magneticSensor.removeMagneticObserver(this);
+		gyroscopeSensor.removeGyroscopeObserver(this);
+
+		gravitySensor.removeGravityObserver(fusedGyroscopeSensor);
+		magneticSensor.removeMagneticObserver(fusedGyroscopeSensor);
+		gyroscopeSensor.removeGyroscopeObserver(fusedGyroscopeSensor);
+
+		fusedGyroscopeSensor.removeObserver(this);
+
+		initMaths();
+
+		accelerationSampleCount = 0;
+		magneticSampleCount = 0;
+
+		hasInitialOrientation = false;
+		stateInitializedAndroid = false;
+	}
+
+	/************************************ Get Default Location ************************************/
 	private void getDefaultLocation() {
 		Log.i(TAG, "[MAINACTIVITY] getDefaultLocation()");
 
@@ -664,7 +898,7 @@ public class MainActivity extends Activity implements OnClickListener, Runnable 
 
 	}
 
-	/****************** get Tag Message ******************/
+	/************************************ get Tag Message ************************************/
 	private String getTagMessage() {
 		Log.i(TAG, "[MAINACTIVITY] getTagMessage()");
 
@@ -734,7 +968,7 @@ public class MainActivity extends Activity implements OnClickListener, Runnable 
 		return text;
 	}
 
-	/**************** Draw Map ****************/
+	/********************************** Draw Map **********************************/
 	/* Draw Polygon */
 	private void drawPolygon(List<LatLng> pointList) {
 		Log.i(TAG, "[MAINACTIVITY] drawPolygon()");
@@ -767,7 +1001,37 @@ public class MainActivity extends Activity implements OnClickListener, Runnable 
 				.title("Destination!"));
 	}
 
-	/****************** Initial ******************/
+	/************************************ Initial ************************************/
+	/**
+	 * Initialize the data structures required for the maths.
+	 */
+	private void initMaths() {
+		gravity = new float[3];
+		magnetic = new float[3];
+
+		initialRotationMatrix = new float[9];
+
+		deltaRotationVectorAndroid = new float[4];
+		deltaRotationMatrixAndroid = new float[9];
+		currentRotationMatrixAndroid = new float[9];
+		gyroscopeOrientationAndroid = new float[3];
+
+		// Initialize the current rotation matrix as an identity matrix...
+		currentRotationMatrixAndroid[0] = 1.0f;
+		currentRotationMatrixAndroid[4] = 1.0f;
+		currentRotationMatrixAndroid[8] = 1.0f;
+	}
+
+	/**
+	 * Initialize the sensors.
+	 */
+	private void initSensors() {
+		fusedGyroscopeSensor = new FusedGyroscopeSensor();
+		gravitySensor = new GravitySensor(this);
+		magneticSensor = new MagneticSensor(this);
+		gyroscopeSensor = new GyroscopeSensor(this);
+	}
+
 	/**
 	 * Initialize the icons.
 	 */
@@ -857,6 +1121,13 @@ public class MainActivity extends Activity implements OnClickListener, Runnable 
 	 */
 	private void initFilters() {
 		Log.i(TAG, "[MAINACTIVITY] initFilters()");
+		// Fuse Compass Filters
+		gravityFilter = new FSMeanFilter();
+		gravityFilter.setWindowSize(MEAN_FILTER_WINDOW);
+
+		magneticFilter = new FSMeanFilter();
+		magneticFilter.setWindowSize(MEAN_FILTER_WINDOW);
+
 		// Create the low-pass filters
 		lpfWiki = new LPFWikipedia();
 		lpfAndDev = new LPFAndroidDeveloper();
@@ -1092,7 +1363,7 @@ public class MainActivity extends Activity implements OnClickListener, Runnable 
 		}
 	}
 
-	/**************** Update UI ****************/
+	/********************************** Update UI **********************************/
 	/**
 	 * Update the acceleration sensor output Text Views.
 	 */
@@ -1150,7 +1421,7 @@ public class MainActivity extends Activity implements OnClickListener, Runnable 
 		dynamicPlot.draw();
 	}
 
-	/**************** Set Graph Plot ****************/
+	/********************************** Set Graph Plot **********************************/
 	/**
 	 * Indicate if the Wikipedia LPF should be plotted.
 	 * 
@@ -1202,7 +1473,7 @@ public class MainActivity extends Activity implements OnClickListener, Runnable 
 		}
 	}
 
-	/**************** Add the Plot ****************/
+	/********************************** Add the Plot **********************************/
 	/*
 	 * Create the output graph line chart.
 	 */
@@ -1284,7 +1555,7 @@ public class MainActivity extends Activity implements OnClickListener, Runnable 
 
 	}
 
-	/**************** Remove Plot ****************/
+	/********************************** Remove Plot **********************************/
 	/**
 	 * Remove a plot from the graph.
 	 * 
@@ -1337,7 +1608,7 @@ public class MainActivity extends Activity implements OnClickListener, Runnable 
 		}
 	}
 
-	/**************** Plot Color ****************/
+	/********************************** Plot Color **********************************/
 	/**
 	 * Create the plot colors.
 	 */
@@ -1363,7 +1634,7 @@ public class MainActivity extends Activity implements OnClickListener, Runnable 
 
 	}
 
-	/**************** Plot Data ****************/
+	/********************************** Plot Data **********************************/
 	// Plot the output data in the UI
 	private void plotData() {
 		Log.i(TAG, "[MAINACTIVITY] plotData()");
@@ -1375,7 +1646,7 @@ public class MainActivity extends Activity implements OnClickListener, Runnable 
 		updateStepCount();
 	}
 
-	/**************** Run ****************/
+	/********************************** Run **********************************/
 	/*
 	 * Output and logs are run on their own thread to keep the UI from hanging
 	 * and the output smooth.
@@ -1391,7 +1662,7 @@ public class MainActivity extends Activity implements OnClickListener, Runnable 
 
 	}
 
-	/****************** on Resume ******************/
+	/************************************ on Resume ************************************/
 	@Override
 	protected void onResume() {
 		Log.i(TAG, "[MAINACTIVITY] onResume()");
@@ -1400,15 +1671,15 @@ public class MainActivity extends Activity implements OnClickListener, Runnable 
 		// readPrefs();
 	}
 
-	/****************** on Stop ******************/
+	/************************************ on Stop ************************************/
 	@Override
 	protected void onStop() {
 		Log.i(TAG, "[MAINACTIVITY] onStop()");
 		super.onStop();
 		// Disable Accelerometer sensor listener
 		sensorManager.unregisterListener(accelListener);
-		// Disable Orientation sensor listener
-		sensorManager.unregisterListener(orientationListener);
+
+		resetFusedCompass();
 
 		if (logData) {
 			writeLogToFile();
@@ -1418,7 +1689,7 @@ public class MainActivity extends Activity implements OnClickListener, Runnable 
 
 	}
 
-	/****************** on Pause ******************/
+	/************************************ on Pause ************************************/
 	@Override
 	protected void onPause() {
 		Log.i(TAG, "[MAINACTIVITY] onPause()");
@@ -1426,15 +1697,15 @@ public class MainActivity extends Activity implements OnClickListener, Runnable 
 
 		// Disable Accelerometer sensor listener
 		sensorManager.unregisterListener(accelListener);
-		// Disable Orientation sensor listener
-		sensorManager.unregisterListener(orientationListener);
+
+		resetFusedCompass();
 
 		if (logData) {
 			writeLogToFile();
 		}
 	}
 
-	/**************** Log Data ****************/
+	/********************************** Log Data **********************************/
 	/* Begin logging data to an external .csv file. */
 	private void startDataLog() {
 		Log.i(TAG, "[MAINACTIVITY] startDataLog()");
@@ -1565,7 +1836,7 @@ public class MainActivity extends Activity implements OnClickListener, Runnable 
 		}
 	}
 
-	/****************** Options Menu ******************/
+	/************************************ Options Menu ************************************/
 	@Override
 	public boolean onCreateOptionsMenu(Menu menu) {
 		Log.i(TAG, "[MAINACTIVITY] onCreateOptionsMenu()");
@@ -1636,6 +1907,13 @@ public class MainActivity extends Activity implements OnClickListener, Runnable 
 			showSettingsDialog();
 			return true;
 
+			/* Filters Setting */
+		case R.id.slims_menu_Settings_fused_setting:
+			Intent intent6 = new Intent(MainActivity.this,
+					FusedSensorsActivity.class);
+			startActivity(intent6);
+			return true;
+
 			/* Setting */
 		case R.id.slims_menu_settings_setting:
 			Intent intent5 = new Intent(MainActivity.this,
@@ -1653,7 +1931,7 @@ public class MainActivity extends Activity implements OnClickListener, Runnable 
 		}
 	}
 
-	/**************** Show Dialog ****************/
+	/********************************** Show Dialog **********************************/
 	// showHelpDialog()
 	private void showHelpDialog() {
 		Log.i(TAG, "[MAINACTIVITY] showHelpDialog()");
